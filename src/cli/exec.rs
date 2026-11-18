@@ -962,16 +962,15 @@ where
     };
     if let Some(sandboxed) = sandboxed {
         // macOS: exec through sandbox-exec
-        let err = exec::Command::new(&sandboxed.program)
-            .args(&sandboxed.args)
-            .exec();
+        let err =
+            exec_with_default_sigpipe(exec::Command::new(&sandboxed.program).args(&sandboxed.args));
         // mise keeps running after a failed exec, so the secrets must not stay in its
         // environment for whatever it spawns next.
         scrub_env(scrub_on_failure);
         bail!("{} {err}", sandboxed.program);
     }
 
-    let err = exec::Command::new(program.clone()).args(&args).exec();
+    let err = exec_with_default_sigpipe(exec::Command::new(program.clone()).args(&args));
     scrub_env(scrub_on_failure);
     let mut msg = format!("{:?} {err}", program.to_string_lossy());
     // The bin never resolved on PATH. If an installed-but-unconfigured tool
@@ -983,6 +982,25 @@ where
         msg.push_str(&hint);
     }
     bail!("{msg}")
+}
+
+/// Runs `cmd.exec()` with SIGPIPE at its default action. The Rust runtime starts mise with SIGPIPE
+/// ignored, and an ignored signal stays ignored across execvp, so every program mise execs would
+/// inherit it. Programs that rely on SIGPIPE to stop then never do: `tr -dc 0-9 </dev/urandom |
+/// head -c 4` under `mise x` (or a shim) spins forever once `head` exits. std::process::Command
+/// resets SIGPIPE before it execs, but the `exec` crate does not. A failed exec leaves mise
+/// running, so this restores mise's own setting before returning the error.
+#[cfg(all(not(test), unix))]
+fn exec_with_default_sigpipe(cmd: &mut exec::Command) -> exec::Error {
+    use nix::sys::signal::{SigHandler, Signal, signal};
+    // SAFETY: SIG_DFL installs no handler, so no handler can run in a bad state.
+    let prev = unsafe { signal(Signal::SIGPIPE, SigHandler::SigDfl) };
+    let err = cmd.exec();
+    if let Ok(prev) = prev {
+        // SAFETY: restores the action that `signal` returned above.
+        let _ = unsafe { signal(Signal::SIGPIPE, prev) };
+    }
+    err
 }
 
 /// The opaque `cannot find binary path`, plus an explanation when an

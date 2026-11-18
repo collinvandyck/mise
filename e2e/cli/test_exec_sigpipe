@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+# mise runs with SIGPIPE ignored, as every Rust program does, and an ignored signal survives exec.
+# A program run through `mise x` must still be killed by SIGPIPE when its reader goes away.
+# With SIGPIPE default, `yes` dies of the signal (exit 141). With it ignored, `yes` gets EPIPE and
+# exits 1, and a reader like `tr </dev/urandom | head` never stops at all.
+assert "mise x -- bash -c 'yes | head -n1 >/dev/null; echo \${PIPESTATUS[0]}'" "141"
